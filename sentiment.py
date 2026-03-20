@@ -1,26 +1,41 @@
 import pandas as pd
-from difflib import SequenceMatcher
-from transformers import pipeline
-from config import SOURCE_WEIGHTS, DEFAULT_WEIGHT
+from rapidfuzz import fuzz
 
 
 sentiment_pipe = pipeline("text-classification", model="ProsusAI/finbert", top_k=None)
+
 print("FinBERT Ready.")
 
-def overall_scores(df):
+
+
+def overall_scores(df, source_weight):
     if df.empty:
-        print("No data to process.")
-        return
-    df = remove_similar_rows_weighted(df, SOURCE_WEIGHTS)
+        return {"message" : "No data to process"}
+         
+    df = remove_similar_rows_weighted(df, source_weight)
     df = calculated_weighted_sentiment(df, sentiment_pipe)
     score = news_weights(df)
+    
     results(df, score)
+    
 
-def remove_similar_rows_weighted(df, weights_dict, threshold=0.85, time_window=1800):
+def is_duplicate(new_headline, seen_headlines, threshold=0.85):
+    for seen in seen_headlines:
+        if new_headline == seen:
+            return True
+            
+        similarity = SequenceMatcher(None, new_headline, seen).ratio()
+        if similarity > threshold:
+            return True
+            
+    return False
+
+def remove_similar_rows_weighted(df, weights_dict, threshold=0.85, time_window=1800, default_weight):
     df['published'] = pd.to_datetime(df['published'], utc=True)
     df_clean = df.sort_values(by='published').reset_index(drop=True).copy()
     
-    df_clean['temp_weight'] = df_clean['source'].map(weights_dict).fillna(DEFAULT_WEIGHT)
+    df_clean['temp_weight'] = df_clean['source'].map(weights_dict).fillna(default_weight)
+    
     indices_to_drop = set()
     
     for i in range(len(df_clean)):
@@ -39,16 +54,21 @@ def remove_similar_rows_weighted(df, weights_dict, threshold=0.85, time_window=1
                 break
             
             ratio = SequenceMatcher(None, current_row['title'], compare_row['title']).ratio()
+            
             if ratio > threshold:
                 if current_row['temp_weight'] < compare_row['temp_weight']:
                     indices_to_drop.add(i)
                     break 
+                
                 else:
                     indices_to_drop.add(j)
+                    
+                    
+                    
     return df_clean.drop(index=list(indices_to_drop)).drop(columns=['temp_weight']).reset_index(drop=True)
      
-def calculated_weighted_sentiment(df, pipe):
-    texts = df['title'].tolist() # Using Title is often cleaner than full_text for headlines
+def calculated_weighted_sentiment(df, pipe, source_weight, default_weight):
+    texts = df['title'].tolist() # Using Title is cleaner than full_text for headlines
     raw_results = pipe(texts)
     
     sentiment_scores = []
@@ -60,7 +80,7 @@ def calculated_weighted_sentiment(df, pipe):
         sentiment_scores.append(scalar)
         
     df['sentiment_score'] = sentiment_scores
-    df['weight'] = df['source'].map(SOURCE_WEIGHTS).fillna(DEFAULT_WEIGHT)
+    df['weight'] = df['source'].map(source_weight).fillna(default_weight)
     df['weighted_contribution'] = df['sentiment_score'] * df['weight']
     return df
 
@@ -84,14 +104,14 @@ def results(overall_dataframe, final_signal_score):
     print(f"Aggregated Sentiment Score: {final_signal_score:.4f}")
 
     if final_signal_score > 0.2:
-        print("Signal: STRONG BUY")
+        return {"Signal": "STRONG BUY"}
     elif final_signal_score > 0.05:
-        print("Signal: WEAK BUY")
+        return {"Signal" : "WEAK BUY"}
     elif final_signal_score < -0.2:
-        print("Signal: STRONG SELL")
+        return {"Signal" : "STRONG SELL"}
     elif final_signal_score < -0.05:
-        print("Signal: WEAK SELL")
+        return {"Signal": "WEAK SELL"}
     else:
-        print("Signal: HOLD / NEUTRAL")
+        return {"Signal": "HOLD / NEUTRAL"}
     
     

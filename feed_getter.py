@@ -1,159 +1,193 @@
-import pandas as pd
-import feedparser 
-import re, html, time
+import os
 import queue
-from alpaca.data.live import NewsDataStream
-from config import RSS_PREFER_NEWS, ALPACA_KEY, ALPACA_SECRET
-from datetime import datetime
+import time
 from collections import deque
-from difflib import SequenceMatcher
-from sentiment import overall_scores
-import threading
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+from typing import Callable, Iterable, Optional
 
-# COMPILE REGEX ONCE (Global)
-CLEAN_HTML = re.compile(r'<[^>]+>')
-CLEAN_URLS = re.compile(r'http[s]?://\S+')
-CLEAN_METADATA = re.compile(r'(Article URL|Comments URL|Points|# Comments):.*?(?=\n|$)')
-CLEAN_SPACES = re.compile(r'\n\s*\n')
+import feedparser
+import pandas as pd
+from alpaca.data.live import NewsDataStream
+import config
+from normalization import clean_text
 
-SEEN_HEADLINES = deque(maxlen=500) #store last 500 to avoid getting them again
-POLL_INTERVAL = 5                  #How often to check (in seconds) — lowered for testing
-news_queue = queue.Queue()
-TIMEOUT_FETCH = 5                  #Timeout for individual feed fetches
+from sentiment import overall_scores as DEFAULT_PROCESSOR
 
-def worker_logic():
-    buffer = []
-    while True:
+
+def _as_symbols(value: Optional[Iterable[str] | str]) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return (value,)
+    return tuple(value)
+
+class FeedGetter:
+    def __init__(self, tickers: Optional[Iterable[str] | str] = None, rss_source: str = "Yahoo Finance", max_seen_headlines: int = 500,
+        news_queue_obj: Optional[queue.Queue] = None, process_batch_callback: Optional[Callable] = DEFAULT_PROCESSOR,
+        alpaca_key: Optional[str] = None,
+        alpaca_secret: Optional[str] = None) -> None:
+        
+        self.tickers = _as_symbols(tickers)
+        self.rss_source = rss_source
+        self.news_queue = news_queue_obj or queue.Queue()
+        self.seen_headlines = deque(maxlen=max_seen_headlines)
+        self.process_batch_callback = process_batch_callback
+        self.alpaca_key = os.getenv("ALPACA_KEY")
+        self.alpaca_secret = os.getenv("ALPACA_SECRET")
+
+    def set_tickers(self, tickers: Iterable[str] | str) -> None:
+        self.tickers = _as_symbols(tickers)
+
+    def fetch_ticker_rss(self, ticker: str) -> list[dict]:
         try:
-            item = news_queue.get(timeout=5)
-            buffer.append(item)
-            print("worker received item. buffer size:", len(buffer))
-            news_queue.task_done()
-        except queue.Empty: # timeout, process whatever is in buffer
-            if buffer:
-                df_batch = pd.DataFrame(buffer)
-                try:
-                    overall_scores(df_batch)
-                except Exception as e:
-                    print(f"Error in pipeline: {e}")
-                buffer = []
+            print(f"Fetching RSS for {ticker}") 
+            template = config.RSS_PREFER_NEWS.get(self.rss_source)
+            if not template:
+                raise KeyError(f"RSS source '{self.rss_source}' is not configured.")
 
-def fetch_ticker_rss(ticker):
-    """Fetch RSS for a single ticker. Designed to run in parallel."""
-    try:
-        #print(f"Fetching RSS for {ticker}")
-        url = RSS_PREFER_NEWS['Yahoo Finance'].format(ticker=ticker)
-        feed = feedparser.parse(url)
-        articles = []
-        if feed.entries:
-            for entry in feed.entries:
-                description = getattr(entry, 'summary', '') or getattr(entry, 'description', '')
+            url = template.format(ticker=ticker)
+            feed = feedparser.parse(url)
+            articles = []
+
+            for entry in getattr(feed, "entries", []):
+                description = getattr(entry, "summary", "") or getattr(entry, "description", "")
                 if description:
-                    description = html.unescape(description)
-                    description = CLEAN_HTML.sub('', description)
-                    description = CLEAN_URLS.sub('', description)
-                    description = CLEAN_METADATA.sub('', description)
-                    description = CLEAN_SPACES.sub('\n', description).strip()
+                    description = clean_text(description)
+
+                published = getattr(entry, "published", datetime.now())
                 news_entry = {
                     "ticker": ticker,
-                    "source": "Yahoo Finance",
+                    "source": self.rss_source,
                     "title": entry.title,
                     "description": description,
                     "link": entry.link,
-                    "published": entry.published if hasattr(entry, 'published') else datetime.now()
+                    "published": published,
                 }
                 articles.append(news_entry)
-        return articles
-    except Exception as e:
-        print(f"Error fetching RSS for {ticker}: {e}")
-        return []
 
-def rss_market_news(tickers):
-    executor = ThreadPoolExecutor(max_workers=5)
-    while True:
-        futures = [executor.submit(fetch_ticker_rss, ticker) for ticker in tickers]
-        for future in futures:
-            try:
-                articles = future.result(timeout=TIMEOUT_FETCH)
-                for article in articles:
-                    if article['title'] not in SEEN_HEADLINES:
-                        SEEN_HEADLINES.append(article['title'])
-                        print(f"Enqueuing RSS article: {article['title']}")
-                        news_queue.put(article)
-            except Exception as e:
-                print(f"Error processing article batch: {e}")
-        time.sleep(POLL_INTERVAL)
+            return articles
+        except Exception as exc:
+            print(f"Error fetching RSS for {ticker}: {exc}")
+            return []
 
-def start_alpaca_stream(ticker):
-    async def alpaca_handler(news):
-        relevant_tickers = [t for t in news.symbols if t in ticker]
-        if not relevant_tickers:
-            return
-        if news.headline in SEEN_HEADLINES:
-            return
-        SEEN_HEADLINES.append(news.headline)
+    def _enqueue_articles(self, articles: list[dict]) -> None:
+        for article in articles:
+            title = article.get("title")
+            if not title or title in self.seen_headlines:
+                continue
 
-        packet = {
-            'source': 'Benzinga', # Alpaca news is almost always Benzinga
-            'title': news.headline,
-            'ticker': relevant_tickers[0],
-            'timestamp': news.created_at
-        }
-        news_queue.put(packet)
-        print(f"Enqueuing Alpaca article: {packet['title']}")
-            
-    stream_client = NewsDataStream(ALPACA_KEY, ALPACA_SECRET)
-    stream_client.subscribe_news(alpaca_handler, *ticker)
-    stream_client.run()
-        
-def combine_table(all_articles):
-    if not all_articles:
-        return pd.DataFrame()
-    # Combine everything into one table
-    full_df = pd.concat(all_articles, ignore_index=True)
-    
-    # Remove duplicates inside this batch
-    full_df.drop_duplicates(subset=['title'], inplace=True)
-    
-    #Remove headlines we have ALREADY seen in previous loops
-    new_articles = []
-    for index, row in full_df.iterrows():
-        headline = row['title']
-        if headline not in SEEN_HEADLINES:
-            new_articles.append(row)
-            SEEN_HEADLINES.append(headline) # Mark as seen
-    
-    return pd.DataFrame(new_articles)
+            self.seen_headlines.append(title)
+            print(f"Enqueuing RSS article: {title}")
+            self.news_queue.put(article)
 
-def is_duplicate(new_headline, seen_headlines, threshold=0.85):
-    for seen in seen_headlines:
-        if new_headline == seen:
-            return True
-            
-        similarity = SequenceMatcher(None, new_headline, seen).ratio()
-        if similarity > threshold:
-            return True
-            
-    return False
+    def rss_market_news(self, timeout: int = 5, poll_interval: int = 5) -> None:
+        if not self.tickers:
+            raise ValueError("No tickers configured. Call 'set_tickers' first.")
 
-if __name__ == "__main__":
-    TICKERS = ["AAPL"]
-    t_brain = threading.Thread(target=worker_logic, daemon=True)
-    t_brain.start()
-    print("Worker thread started")
+        max_workers = max(1, min(len(self.tickers), 16))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            while True:
+                futures = [executor.submit(self.fetch_ticker_rss, ticker) for ticker in self.tickers]
+                for future in futures:
+                    try:
+                        articles = future.result(timeout=timeout)
+                        self._enqueue_articles(articles)
+                    except Exception as exc:
+                        print(f"Error processing article batch: {exc}")
 
+                time.sleep(poll_interval)
 
-   # t_rss = threading.Thread(target=rss_market_news, args=(TICKERS,), daemon=True)
-    #t_rss.start()
-    #print("RSS thread started, fetching news...")
-    
-    t_alpaca = threading.Thread(target=start_alpaca_stream, args=(TICKERS,), daemon=True)
-    t_alpaca.start()
-    print("Alpaca stream started")
-    
-    try:
+    def _run_processor(self, df_batch: pd.DataFrame) -> None:
+        if not self.process_batch_callback:
+            return 
+
+        try:
+            self.process_batch_callback(df_batch)
+        except TypeError:
+            source_weights = getattr(config, "SOURCE_WEIGHTS", None)
+            if source_weights is None:
+                raise
+            self.process_batch_callback(df_batch, source_weights)
+
+    def worker_logic(self, timeout: int = 5) -> None:
+        buffer = []
         while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        print("Shutting down...")
+            try:
+                item = self.news_queue.get(timeout=timeout)
+                buffer.append(item)
+                print(f"worker received item. buffer size: {len(buffer)}")
+                self.news_queue.task_done()
+            except queue.Empty:
+                if not buffer:
+                    continue
+
+                df_batch = pd.DataFrame(buffer)
+                try:
+                    self._run_processor(df_batch)
+                except Exception as exc:
+                    print(f"Error in pipeline: {exc}")
+                finally:
+                    buffer = []
+
+    def start_alpaca_stream(
+        self,
+        tickers: Optional[Iterable[str] | str] = None,
+        alpaca_key: Optional[str] = None,
+        alpaca_secret: Optional[str] = None,
+    ) -> None:
+        symbols = _as_symbols(tickers) or self.tickers
+        if not symbols:
+            raise ValueError("No tickers configured for Alpaca stream.")
+
+        key = alpaca_key or self.alpaca_key
+        secret = alpaca_secret or self.alpaca_secret
+        if not key or not secret:
+            raise ValueError("Alpaca credentials are missing.")
+
+        async def alpaca_handler(news):
+            relevant_tickers = [symbol for symbol in news.symbols if symbol in symbols]
+            if not relevant_tickers:
+                return
+
+            if news.headline in self.seen_headlines:
+                return
+            self.seen_headlines.append(news.headline)
+
+            packet = {
+                "source": "Benzinga",
+                "title": news.headline,
+                "ticker": relevant_tickers[0],
+                "published": news.created_at,
+            }
+            self.news_queue.put(packet)
+            print(f"Enqueuing Alpaca article: {packet['title']}")
+
+        stream_client = NewsDataStream(key, secret)
+        stream_client.subscribe_news(alpaca_handler, *symbols)
+        stream_client.run()
+
+
+# Backward-compatible functional API.
+_DEFAULT_FEED_GETTER = FeedGetter()
+SEEN_HEADLINES = _DEFAULT_FEED_GETTER.seen_headlines
+news_queue = _DEFAULT_FEED_GETTER.news_queue
+
+
+def worker_logic(timeout: int = 5) -> None:
+    _DEFAULT_FEED_GETTER.worker_logic(timeout=timeout)
+
+
+def fetch_ticker_rss(ticker: str) -> list[dict]:
+    return _DEFAULT_FEED_GETTER.fetch_ticker_rss(ticker)
+
+
+def rss_market_news(tickers: Iterable[str] | str, timeout: int = 5, poll_interval: int = 5) -> None:
+    _DEFAULT_FEED_GETTER.set_tickers(tickers)
+    _DEFAULT_FEED_GETTER.rss_market_news(timeout=timeout, poll_interval=poll_interval)
+
+
+def start_alpaca_stream(ticker: Iterable[str] | str, 
+                        alpaca_key: Optional[str] = None, alpaca_secret: Optional[str] = None) -> None:
+    _DEFAULT_FEED_GETTER.start_alpaca_stream(tickers=ticker, alpaca_key=alpaca_key, alpaca_secret=alpaca_secret)
+    
