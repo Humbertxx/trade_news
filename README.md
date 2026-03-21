@@ -1,3 +1,5 @@
+WIP: Current README.md is from first version of project. It will be updated as the project evolves completely. For now, it serves as a basic overview of the project's purpose. Structure and usage changes are expected as the codebase develops. Please refer to the latest code for the most accurate implementation details.
+
 # Real-Time Financial News Sentiment getter
 
 A multi-threaded Python pipeline designed to ingest financial news from multiple sources (Yahoo Finance RSS and Alpaca News API) in real-time. It normalizes the data, deduplicates headlines, and feeds them into a sentiment (`FinBERT`) analysis engine.
