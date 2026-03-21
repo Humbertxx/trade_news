@@ -1,6 +1,8 @@
 import pandas as pd
 import re
 from rapidfuzz import fuzz
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 
 stopwords = {"the", "a", "an", "to", "of", "and", "for", "in", "on"}
 CLEAN_HTML = re.compile(r"<[^>]+>")
@@ -19,16 +21,6 @@ def normalize(df1 : pd.DataFrame, df2 : pd.DataFrame) -> pd.DataFrame:
 def collected_data(df_api: pd.DataFrame, df_rss: pd.DataFrame) -> pd.DataFrame:
     return pd.concat([df_api, df_rss], ignore_index=True)
 
-def is_duplicate(new_headline, seen_headlines, threshold=0.85):
-    for seen in seen_headlines:
-        if new_headline == seen:
-            return True
-            
-        similarity = fuzz.token_set_ratio(new_headline, seen)
-        if similarity > threshold:
-            return True
-            
-    return False
 
 # change each format of time to UTC time
 def time_fix(df: pd.DataFrame) -> pd.DataFrame:
@@ -62,9 +54,32 @@ def combine_table(all_articles: pd.DataFrame) -> pd.DataFrame:
             SEEN_HEADLINES.append(headline) 
     
     return pd.DataFrame(new_articles)
-def remove_similar_rows_weighted(df, weights_dict, threshold=0.85, time_window=1800, default_weight):
+
+
+
+
+
+
+# TO DO: Scikit Learn TF-IDF and cross cosine functions
+def time_bucket_handler():
+    return False
+    
+# Simple duplication handler using fuzz (On)
+def is_duplicate(new_headline, seen_headlines, threshold=0.85):
+    for seen in seen_headlines:
+        if new_headline == seen:
+            return True
+            
+        similarity = fuzz.token_set_ratio(new_headline, seen)
+        if similarity > threshold:
+            return True
+    return False
+    
+# O(n^2) slow thing
+def remove_similar_rows_weighted(df, weights_dict, threshold=0.85, time_window=1800, default_weight=1):
     df['published'] = pd.to_datetime(df['published'], utc=True)
     df_clean = df.sort_values(by='published').reset_index(drop=True).copy()
+    df = df.drop_duplicates(subset=['title']).reset_index(drop=True)
     
     df_clean['temp_weight'] = df_clean['source'].map(weights_dict).fillna(default_weight)
     
@@ -84,18 +99,14 @@ def remove_similar_rows_weighted(df, weights_dict, threshold=0.85, time_window=1
             
             if time_diff > time_window:
                 break
-            
-            ratio = SequenceMatcher(None, current_row['title'], compare_row['title']).ratio()
+            ratio = fuzz.token_set_ratio(current_row['title'], compare_row['title'])
             
             if ratio > threshold:
                 if current_row['temp_weight'] < compare_row['temp_weight']:
                     indices_to_drop.add(i)
                     break 
-                
                 else:
                     indices_to_drop.add(j)
-                    
-                    
                     
     return df_clean.drop(index=list(indices_to_drop)).drop(columns=['temp_weight']).reset_index(drop=True)
      

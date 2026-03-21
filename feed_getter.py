@@ -59,9 +59,7 @@ def resolve_rss_sources(requested_sources: Optional[Iterable[str] | str] = None)
     valid_sources = ", ".join(sorted(configured_sources.keys()))
     if unknown_sources:
         invalid = ", ".join(unknown_sources)
-        raise ValueError(
-            f"Unknown rss_source value(s): {invalid}. Valid RSS_PREFER_NEWS keys: {valid_sources}"
-        )
+        raise ValueError(f"Unknown rss_source value(s): {invalid}. Valid RSS_PREFER_NEWS keys: {valid_sources}")
     if not resolved_sources:
         raise ValueError(f"No valid rss_source values provided. Valid RSS_PREFER_NEWS keys: {valid_sources}")
     return tuple(resolved_sources)

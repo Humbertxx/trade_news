@@ -7,7 +7,6 @@ def get_sentiment_pipe():
     sentiment_pipe = pipeline("text-classification", model="ProsusAI/finbert", top_k=None)
     return sentiment_pipe
 
-
 # get the aggregated title (title + description) and calculate sentiment
 def calculated_weighted_sentiment(df: pd.DataFrame, pipe=None, source_weight: Mapping[str, float] | None = None, 
                                   default_weight: float = 1.0) -> pd.DataFrame:
