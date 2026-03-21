@@ -9,10 +9,9 @@ from typing import Callable, Iterable, Optional
 import feedparser
 import pandas as pd
 from alpaca.data.live import NewsDataStream
-import config
-from normalization import clean_text
 
-from sentiment import overall_scores as DEFAULT_PROCESSOR
+from normalization import clean_text
+import config
 
 
 def _as_symbols(value: Optional[Iterable[str] | str]) -> tuple[str, ...]:
@@ -22,56 +21,114 @@ def _as_symbols(value: Optional[Iterable[str] | str]) -> tuple[str, ...]:
         return (value,)
     return tuple(value)
 
+
+def _as_sources(value: Optional[Iterable[str] | str]) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return (value,)
+    return tuple(value)
+
+
+def resolve_rss_sources(requested_sources: Optional[Iterable[str] | str] = None) -> tuple[str, ...]:
+    configured_sources = getattr(config, "RSS_PREFER_NEWS", {})
+    if not configured_sources:
+        raise ValueError("RSS_PREFER_NEWS has no configured sources.")
+
+    normalized_lookup = {key.strip().lower(): key for key in configured_sources}
+    if requested_sources is None:
+        return tuple(configured_sources.keys())
+
+    resolved_sources = []
+    unknown_sources = []
+    for source in _as_sources(requested_sources):
+        if source in configured_sources:
+            matched_source = source
+        else:
+            normalized_source = str(source).strip().lower()
+            matched_source = normalized_lookup.get(normalized_source)
+
+        if not matched_source:
+            unknown_sources.append(str(source))
+            continue
+
+        if matched_source not in resolved_sources:
+            resolved_sources.append(matched_source)
+
+    valid_sources = ", ".join(sorted(configured_sources.keys()))
+    if unknown_sources:
+        invalid = ", ".join(unknown_sources)
+        raise ValueError(
+            f"Unknown rss_source value(s): {invalid}. Valid RSS_PREFER_NEWS keys: {valid_sources}"
+        )
+    if not resolved_sources:
+        raise ValueError(f"No valid rss_source values provided. Valid RSS_PREFER_NEWS keys: {valid_sources}")
+    return tuple(resolved_sources)
+
+
+def resolve_rss_source(requested_source: str) -> str:
+    return resolve_rss_sources(requested_source)[0]
+ 
 class FeedGetter:
-    def __init__(self, tickers: Optional[Iterable[str] | str] = None, rss_source: str = "Yahoo Finance", max_seen_headlines: int = 500,
+    def __init__(self, tickers: Optional[Iterable[str] | str] = None, rss_source: Optional[Iterable[str] | str] = None, max_seen_headlines: int = 500,
         news_queue_obj: Optional[queue.Queue] = None, process_batch_callback: Optional[Callable] = DEFAULT_PROCESSOR,
         alpaca_key: Optional[str] = None,
         alpaca_secret: Optional[str] = None) -> None:
         
         self.tickers = _as_symbols(tickers)
-        self.rss_source = rss_source
+        self.rss_sources = resolve_rss_sources(rss_source)
+        self.rss_source = self.rss_sources[0]
         self.news_queue = news_queue_obj or queue.Queue()
         self.seen_headlines = deque(maxlen=max_seen_headlines)
         self.process_batch_callback = process_batch_callback
+        
         self.alpaca_key = os.getenv("ALPACA_KEY")
         self.alpaca_secret = os.getenv("ALPACA_SECRET")
 
     def set_tickers(self, tickers: Iterable[str] | str) -> None:
         self.tickers = _as_symbols(tickers)
 
+    def set_rss_source(self, rss_source: Iterable[str] | str) -> None:
+        self.rss_sources = resolve_rss_sources(rss_source)
+        self.rss_source = self.rss_sources[0]
+
+    def set_rss_sources(self, rss_sources: Iterable[str] | str) -> None:
+        self.set_rss_source(rss_sources)
+
     def fetch_ticker_rss(self, ticker: str) -> list[dict]:
-        try:
-            print(f"Fetching RSS for {ticker}") 
-            template = config.RSS_PREFER_NEWS.get(self.rss_source)
+        articles = []
+        configured_sources = getattr(config, "RSS_PREFER_NEWS", {})
+        for source in self.rss_sources:
+            template = configured_sources.get(source)
             if not template:
-                raise KeyError(f"RSS source '{self.rss_source}' is not configured.")
+                print(f"RSS source '{source}' is not configured. Skipping.")
+                continue
 
-            url = template.format(ticker=ticker)
-            feed = feedparser.parse(url)
-            articles = []
+            try:
+                print(f"Fetching RSS for {ticker} from {source}")
+                url = template.format(ticker=ticker)
+                feed = feedparser.parse(url)
 
-            for entry in getattr(feed, "entries", []):
-                description = getattr(entry, "summary", "") or getattr(entry, "description", "")
-                if description:
-                    description = clean_text(description)
+                for entry in getattr(feed, "entries", []):
+                    description = getattr(entry, "summary", "") or getattr(entry, "description", "")
+                    if description:
+                        description = clean_text(description)
 
-                published = getattr(entry, "published", datetime.now())
-                news_entry = {
-                    "ticker": ticker,
-                    "source": self.rss_source,
-                    "title": entry.title,
-                    "description": description,
-                    "link": entry.link,
-                    "published": published,
-                }
-                articles.append(news_entry)
+                    published = getattr(entry, "published", datetime.now())
+                    news_entry = {
+                        "ticker": ticker,
+                        "source": source,
+                        "title": entry.title,
+                        "description": description,
+                        "link": entry.link,
+                        "published": published,
+                    }
+                    articles.append(news_entry)
+            except Exception as exc:
+                print(f"Error fetching RSS for {ticker} from {source}: {exc}")
+        return articles
 
-            return articles
-        except Exception as exc:
-            print(f"Error fetching RSS for {ticker}: {exc}")
-            return []
-
-    def _enqueue_articles(self, articles: list[dict]) -> None:
+    def enqueue_articles(self, articles: list[dict]) -> None:
         for article in articles:
             title = article.get("title")
             if not title or title in self.seen_headlines:
@@ -92,20 +149,19 @@ class FeedGetter:
                 for future in futures:
                     try:
                         articles = future.result(timeout=timeout)
-                        self._enqueue_articles(articles)
+                        self.enqueue_articles(articles)
                     except Exception as exc:
                         print(f"Error processing article batch: {exc}")
 
                 time.sleep(poll_interval)
 
-    def _run_processor(self, df_batch: pd.DataFrame) -> None:
+    def run_processor(self, df_batch: pd.DataFrame) -> None:
         if not self.process_batch_callback:
             return 
-
         try:
             self.process_batch_callback(df_batch)
         except TypeError:
-            source_weights = getattr(config, "SOURCE_WEIGHTS", None)
+            source_weights = os.getenv("SOURCE_WEIGHTS")
             if source_weights is None:
                 raise
             self.process_batch_callback(df_batch, source_weights)
@@ -124,18 +180,15 @@ class FeedGetter:
 
                 df_batch = pd.DataFrame(buffer)
                 try:
-                    self._run_processor(df_batch)
+                    self.run_processor(df_batch)
                 except Exception as exc:
                     print(f"Error in pipeline: {exc}")
                 finally:
                     buffer = []
 
-    def start_alpaca_stream(
-        self,
-        tickers: Optional[Iterable[str] | str] = None,
+    def start_alpaca_stream(self, tickers: Optional[Iterable[str] | str] = None,
         alpaca_key: Optional[str] = None,
-        alpaca_secret: Optional[str] = None,
-    ) -> None:
+        alpaca_secret: Optional[str] = None) -> None:
         symbols = _as_symbols(tickers) or self.tickers
         if not symbols:
             raise ValueError("No tickers configured for Alpaca stream.")
@@ -167,27 +220,3 @@ class FeedGetter:
         stream_client.subscribe_news(alpaca_handler, *symbols)
         stream_client.run()
 
-
-# Backward-compatible functional API.
-_DEFAULT_FEED_GETTER = FeedGetter()
-SEEN_HEADLINES = _DEFAULT_FEED_GETTER.seen_headlines
-news_queue = _DEFAULT_FEED_GETTER.news_queue
-
-
-def worker_logic(timeout: int = 5) -> None:
-    _DEFAULT_FEED_GETTER.worker_logic(timeout=timeout)
-
-
-def fetch_ticker_rss(ticker: str) -> list[dict]:
-    return _DEFAULT_FEED_GETTER.fetch_ticker_rss(ticker)
-
-
-def rss_market_news(tickers: Iterable[str] | str, timeout: int = 5, poll_interval: int = 5) -> None:
-    _DEFAULT_FEED_GETTER.set_tickers(tickers)
-    _DEFAULT_FEED_GETTER.rss_market_news(timeout=timeout, poll_interval=poll_interval)
-
-
-def start_alpaca_stream(ticker: Iterable[str] | str, 
-                        alpaca_key: Optional[str] = None, alpaca_secret: Optional[str] = None) -> None:
-    _DEFAULT_FEED_GETTER.start_alpaca_stream(tickers=ticker, alpaca_key=alpaca_key, alpaca_secret=alpaca_secret)
-    

@@ -1,5 +1,6 @@
 import pandas as pd
 import re
+from rapidfuzz import fuzz
 
 stopwords = {"the", "a", "an", "to", "of", "and", "for", "in", "on"}
 CLEAN_HTML = re.compile(r"<[^>]+>")
@@ -17,6 +18,17 @@ def normalize(df1 : pd.DataFrame, df2 : pd.DataFrame) -> pd.DataFrame:
 # normalize into a single data frame both APIS feed and APIS RSS
 def collected_data(df_api: pd.DataFrame, df_rss: pd.DataFrame) -> pd.DataFrame:
     return pd.concat([df_api, df_rss], ignore_index=True)
+
+def is_duplicate(new_headline, seen_headlines, threshold=0.85):
+    for seen in seen_headlines:
+        if new_headline == seen:
+            return True
+            
+        similarity = fuzz.token_set_ratio(new_headline, seen)
+        if similarity > threshold:
+            return True
+            
+    return False
 
 # change each format of time to UTC time
 def time_fix(df: pd.DataFrame) -> pd.DataFrame:
@@ -50,9 +62,43 @@ def combine_table(all_articles: pd.DataFrame) -> pd.DataFrame:
             SEEN_HEADLINES.append(headline) 
     
     return pd.DataFrame(new_articles)
-
-
-
+def remove_similar_rows_weighted(df, weights_dict, threshold=0.85, time_window=1800, default_weight):
+    df['published'] = pd.to_datetime(df['published'], utc=True)
+    df_clean = df.sort_values(by='published').reset_index(drop=True).copy()
+    
+    df_clean['temp_weight'] = df_clean['source'].map(weights_dict).fillna(default_weight)
+    
+    indices_to_drop = set()
+    
+    for i in range(len(df_clean)):
+        if i in indices_to_drop:
+            continue
+        current_row = df_clean.iloc[i]
+        
+        for j in range(i + 1, len(df_clean)):
+            if j in indices_to_drop:
+                continue   
+            compare_row = df_clean.iloc[j]
+            
+            time_diff = (compare_row['published'] - current_row['published']).total_seconds()
+            
+            if time_diff > time_window:
+                break
+            
+            ratio = SequenceMatcher(None, current_row['title'], compare_row['title']).ratio()
+            
+            if ratio > threshold:
+                if current_row['temp_weight'] < compare_row['temp_weight']:
+                    indices_to_drop.add(i)
+                    break 
+                
+                else:
+                    indices_to_drop.add(j)
+                    
+                    
+                    
+    return df_clean.drop(index=list(indices_to_drop)).drop(columns=['temp_weight']).reset_index(drop=True)
+     
 # allows for full description (headline + text) allowing better model clustering
 def concatenate_text(df: pd.DataFrame) -> pd.DataFrame:
     df['description'] = df['description'].fillna('')
