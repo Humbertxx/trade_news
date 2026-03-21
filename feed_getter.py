@@ -8,6 +8,7 @@ from typing import Callable, Iterable, Optional
 
 import feedparser
 import pandas as pd
+
 from alpaca.data.live import NewsDataStream
 
 from normalization import clean_text
@@ -71,9 +72,7 @@ def resolve_rss_source(requested_source: str) -> str:
  
 class FeedGetter:
     def __init__(self, tickers: Optional[Iterable[str] | str] = None, rss_source: Optional[Iterable[str] | str] = None, max_seen_headlines: int = 500,
-        news_queue_obj: Optional[queue.Queue] = None, process_batch_callback: Optional[Callable] = DEFAULT_PROCESSOR,
-        alpaca_key: Optional[str] = None,
-        alpaca_secret: Optional[str] = None) -> None:
+        news_queue_obj: Optional[queue.Queue] = None, process_batch_callback: Optional[Callable] = DEFAULT_PROCESSOR) -> None:
         
         self.tickers = _as_symbols(tickers)
         self.rss_sources = resolve_rss_sources(rss_source)
