@@ -1,7 +1,7 @@
 import pandas as pd
 from transformers import pipeline
      
-
+# starts Finbert model vectorization for modeling sentiment
 def get_sentiment_pipe():
     sentiment_pipe = pipeline("text-classification", model="ProsusAI/finbert", top_k=None)
     return sentiment_pipe
@@ -36,6 +36,8 @@ def final_weight_score(df: pd.DataFrame) -> float:
     
     return final_signal_score
 
+# returns result and sentiment score that given based on weighted average. This works only as visual showcase
+# representation of final_weight_score 
 def results(overall_dataframe: pd.DataFrame, final_signal_score: float) -> dict:
     print("\n" + "="*50)
     print("PROCESSED DATAFRAME (Top 5)")

@@ -16,8 +16,10 @@ def main():
 
     process_batch_callback = partial(process_batch, source_weights=config.SOURCE_WEIGHTS)
 
-    feed = FeedGetter(tickers=tickers,rss_source=rss_sources,process_batch_callback=process_batch_callback)
-    Thread(target=feed.worker_logic, daemon=True).start()
+    feed = FeedGetter(tickers=tickers,rss_source=rss_sources,max_seen_headlines=config.MAX_SEEN_HEADLINE,
+                      process_batch_callback=process_batch_callback)
+    
+    Thread(target=feed.worker_logic(timeout=config.POLL_INTERVAL), daemon=True).start()
     Thread(target=feed.start_alpaca_stream, daemon=True).start()
     feed.rss_market_news(timeout=config.TIMEOUT_FETCH, poll_interval=config.POLL_INTERVAL)
 

@@ -14,28 +14,20 @@ import config
 
 
 class FeedGetter:
-    def __init__(self, tickers: Optional[Iterable[str] | str] = None, rss_source: Optional[Iterable[str] | str] = None, max_seen_headlines: int = 500,
-        news_queue_obj: Optional[queue.Queue] = None, process_batch_callback: Optional[Callable] = None) -> None:
+    def __init__(self, 
+                tickers: Optional[Iterable[str] | str] = None, 
+                rss_source: Optional[Iterable[str] | str] = None, 
+                max_seen_headlines: int = None,
+                process_batch_callback: Optional[Callable] = None
+                ) -> None:
         
         self.tickers = tickers
         self.rss_sources = rss_source # takes key values from previous code calls
-        self.rss_source = self.rss_sources[0]
-        self.news_queue = news_queue_obj or queue.Queue()
+        self.news_queue = queue.Queue()
         self.seen_headlines = deque(maxlen=max_seen_headlines)
         self.process_batch_callback = process_batch_callback
-        
         self.alpaca_key = os.getenv("ALPACA_KEY")
         self.alpaca_secret = os.getenv("ALPACA_SECRET")
-
-    def set_tickers(self, tickers: Iterable[str] | str) -> None:
-        self.tickers = tickers
-
-    def set_rss_source(self, rss_source: Iterable[str] | str) -> None:
-        self.rss_sources = rss_source
-        self.rss_source = self.rss_sources[0]
-
-    def set_rss_sources(self, rss_sources: Iterable[str] | str) -> None:
-        self.set_rss_source(rss_sources)
 
     def fetch_ticker_rss(self, ticker: str) -> list[dict]:
         articles = []
@@ -93,11 +85,6 @@ class FeedGetter:
 
                 time.sleep(poll_interval)
 
-    def run_processor(self, df_batch: pd.DataFrame) -> None:
-        if not self.process_batch_callback:
-            return
-        self.process_batch_callback(df_batch)
-
     def worker_logic(self, timeout: int = 5) -> None:
         buffer = []
         while True:
@@ -118,17 +105,13 @@ class FeedGetter:
                 finally:
                     buffer = []
 
-    def start_alpaca_stream(self, tickers: Optional[Iterable[str] | str] = None, alpaca_key: Optional[str] = None,
-        alpaca_secret: Optional[str] = None) -> None:
-        symbols = tickers or self.tickers
-        if not symbols:
-            raise ValueError("No tickers configured for Alpaca stream.")
-
-        key = alpaca_key or self.alpaca_key
-        secret = alpaca_secret or self.alpaca_secret
+    def start_alpaca_stream(self) -> None:
+        symbols = self.tickers
+        key = self.alpaca_key
+        secret = self.alpaca_secret
         if not key or not secret:
             raise ValueError("Alpaca credentials are missing.")
-
+        
         async def alpaca_handler(news):
             relevant_tickers = [symbol for symbol in news.symbols if symbol in symbols]
             if not relevant_tickers:
