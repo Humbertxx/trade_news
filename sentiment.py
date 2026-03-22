@@ -9,10 +9,8 @@ def get_sentiment_pipe():
 
 # get the aggregated title (title + description) and calculate sentiment
 def calculated_weighted_sentiment(df: pd.DataFrame, pipe=None, source_weight: Mapping[str, float] | None = None, 
-                                  default_weight: float = 1.0) -> pd.DataFrame:
+                                  default_weight: int = 1) -> pd.DataFrame:
     pipe = get_sentiment_pipe()
-    source_weight = source_weight
-    
     texts = df['title'].tolist() 
     raw_results = pipe(texts)
     
@@ -50,11 +48,9 @@ def results(overall_dataframe: pd.DataFrame, final_signal_score: float) -> dict:
     print("\n" + "="*50)
     print("FINAL TRADING SIGNAL")
     print("="*50)
-    
-    print(f"\n Aggregated Sentiment Score: {final_signal_score}")
 
     result = {"Aggregated Sentiment Score": final_signal_score}
-
+    
     if final_signal_score > 0.2:
         result["Signal"] = "STRONG BUY"
     elif final_signal_score > 0.05:

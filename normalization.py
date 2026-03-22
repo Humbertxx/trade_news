@@ -2,19 +2,27 @@ import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
+import config
+from sentiment import *
 
-# normalize into a single data frame both APIS feed and APIS RSS
-def collected_data(df_api: pd.DataFrame, df_rss: pd.DataFrame) -> pd.DataFrame:
-    return pd.concat([df_api, df_rss], ignore_index=True)
+def process_batch(df: pd.DataFrame) -> pd.DataFrame:
+    if "description" not in df.columns:
+        df["description"] = ""
+    df = concatenate_text(df)
+    
+    df = dedup_tiingo_marketaux(df, weights_dict=config.SOURCE_WEIGHTS)
+    df = calculated_weighted_sentiment(df, source_weight=config.SOURCE_WEIGHTS)
+    score = final_weight_score(df)
+    return results(df, score)
 
-# allows for full description (headline + text) allowing better model clustering
+    # allows for full description (headline + text) allowing better model clustering
 def concatenate_text(df: pd.DataFrame) -> pd.DataFrame:
     df['description'] = df['description'].fillna('')
     df['full_text'] = df['title'] + ". " + df['description']
     return df
 
 # Scikit Learn TF-IDF and cross cosine functions
-def dedup_tiingo_marketaux(df, weights_dict=None, time_window=1800, sim_threshold=85,default_weight=1):
+def dedup_tiingo_marketaux(df, weights_dict=None, time_window=1800, sim_threshold=0.85,default_weight=1):
     
     if weights_dict is None:
         weights_dict = {}
@@ -70,5 +78,3 @@ def dedup_tiingo_marketaux(df, weights_dict=None, time_window=1800, sim_threshol
 
     df_clean = df.drop(index=list(indices_to_drop)).reset_index(drop=True)
     return df_clean.drop(columns=["temp_weight", "time_bucket"])
-
-
