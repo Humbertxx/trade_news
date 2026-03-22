@@ -1,40 +1,25 @@
 import pandas as pd
-import re
-from rapidfuzz import fuzz
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+import numpy as np
 
-stopwords = {"the", "a", "an", "to", "of", "and", "for", "in", "on"}
-CLEAN_HTML = re.compile(r"<[^>]+>")
-CLEAN_URLS = re.compile(r"http[s]?://\S+")
-CLEAN_METADATA = re.compile(r"(Article URL|Comments URL|Points|# Comments):.*?(?=\n|$)")
-CLEAN_SPACES = re.compile(r"\n\s*\n")
 
 # function that normalize text base on pass functions
 def normalize(df1 : pd.DataFrame, df2 : pd.DataFrame) -> pd.DataFrame:
     df = collected_data(df1,df2)
     df = concatenate_text(df)
-    df = time_fix(df)
+    #df = time_fix(df)
     return df
 
 # normalize into a single data frame both APIS feed and APIS RSS
 def collected_data(df_api: pd.DataFrame, df_rss: pd.DataFrame) -> pd.DataFrame:
     return pd.concat([df_api, df_rss], ignore_index=True)
 
-
-# change each format of time to UTC time
-def time_fix(df: pd.DataFrame) -> pd.DataFrame:
-    df['published'] = pd.to_datetime(df['published'], utc=True, format='mixed')
+# allows for full description (headline + text) allowing better model clustering
+def concatenate_text(df: pd.DataFrame) -> pd.DataFrame:
+    df['description'] = df['description'].fillna('')
+    df['full_text'] = df['title'] + ". " + df['description']
     return df
-
-def clean_text(title: str) -> str:
-    cleaned = CLEAN_HTML.sub(" ", title or "")
-    cleaned = CLEAN_URLS.sub(" ", cleaned)
-    cleaned = CLEAN_METADATA.sub(" ", cleaned)
-    cleaned = CLEAN_SPACES.sub(" ", cleaned)
-    tokens = re.findall(r"\w+", cleaned.lower())
-    tokens = [token for token in tokens if token not in stopwords]
-    return " ".join(tokens)
 
 def combine_table(all_articles: pd.DataFrame) -> pd.DataFrame:
     if not all_articles:
@@ -55,63 +40,62 @@ def combine_table(all_articles: pd.DataFrame) -> pd.DataFrame:
     
     return pd.DataFrame(new_articles)
 
-
-
-
-
-
 # TO DO: Scikit Learn TF-IDF and cross cosine functions
-def time_bucket_handler():
-    return False
+def dedup_tiingo_marketaux(df, weights_dict=None, time_window=1800, sim_threshold=85,default_weight=1):
     
-# Simple duplication handler using fuzz (On)
-def is_duplicate(new_headline, seen_headlines, threshold=0.85):
-    for seen in seen_headlines:
-        if new_headline == seen:
-            return True
-            
-        similarity = fuzz.token_set_ratio(new_headline, seen)
-        if similarity > threshold:
-            return True
-    return False
-    
-# O(n^2) slow thing
-def remove_similar_rows_weighted(df, weights_dict, threshold=0.85, time_window=1800, default_weight=1):
-    df['published'] = pd.to_datetime(df['published'], utc=True)
-    df_clean = df.sort_values(by='published').reset_index(drop=True).copy()
-    df = df.drop_duplicates(subset=['title']).reset_index(drop=True)
-    
-    df_clean['temp_weight'] = df_clean['source'].map(weights_dict).fillna(default_weight)
-    
+    if weights_dict is None:
+        weights_dict = {}
+
+    df = df.copy()
+    df["published"] = pd.to_datetime(df["published"], utc=True)
+
+    subset_cols = ["title", "source"]
+    subset_cols = [c for c in subset_cols if c in df.columns]
+
+    df = df.drop_duplicates(subset=subset_cols).reset_index(drop=True)
+    df["temp_weight"] = df["source"].map(weights_dict).fillna(default_weight)
+
+    # 2. Time bucketing
+    epoch = pd.Timestamp("1970-01-01", tz="utc")
+    df["time_bucket"] = ((df["published"] - epoch).dt.total_seconds() // time_window).astype(int)
+
+    # 3. Single global TF-IDF over all titles
+    titles = df["title"].astype(str).tolist()
+    vectorizer = TfidfVectorizer(ngram_range=(1, 2), lowercase=True, stop_words="english")
+    tfidf_matrix = vectorizer.fit_transform(titles)
+
     indices_to_drop = set()
-    
-    for i in range(len(df_clean)):
-        if i in indices_to_drop:
+
+    for _, group in df.groupby("time_bucket"):
+        idx_in_bucket = group.index.to_numpy()
+        if len(idx_in_bucket) < 2:
             continue
-        current_row = df_clean.iloc[i]
+        bucket_matrix = tfidf_matrix[idx_in_bucket]
+        sim_matrix = cosine_similarity(bucket_matrix)
         
-        for j in range(i + 1, len(df_clean)):
-            if j in indices_to_drop:
-                continue   
-            compare_row = df_clean.iloc[j]
-            
-            time_diff = (compare_row['published'] - current_row['published']).total_seconds()
-            
-            if time_diff > time_window:
-                break
-            ratio = fuzz.token_set_ratio(current_row['title'], compare_row['title'])
-            
-            if ratio > threshold:
-                if current_row['temp_weight'] < compare_row['temp_weight']:
-                    indices_to_drop.add(i)
-                    break 
+        weights = df.loc[idx_in_bucket, "temp_weight"].to_numpy()
+        n = len(idx_in_bucket)
+
+        for i in range(n):
+            gi = idx_in_bucket[i]
+            if gi in indices_to_drop:
+                continue
+
+            similar_js = np.where(sim_matrix[i] >= sim_threshold)[0]
+            for j in similar_js:
+                if j == i:
+                    continue
+                gj = idx_in_bucket[j]
+                if gj in indices_to_drop:
+                    continue
+
+                if weights[i] < weights[j]:
+                    indices_to_drop.add(gi)
+                    break
                 else:
-                    indices_to_drop.add(j)
-                    
-    return df_clean.drop(index=list(indices_to_drop)).drop(columns=['temp_weight']).reset_index(drop=True)
-     
-# allows for full description (headline + text) allowing better model clustering
-def concatenate_text(df: pd.DataFrame) -> pd.DataFrame:
-    df['description'] = df['description'].fillna('')
-    df['full_text'] = df['title'] + ". " + df['description']
-    return df
+                    indices_to_drop.add(gj)
+
+    df_clean = df.drop(index=list(indices_to_drop)).reset_index(drop=True)
+    return df_clean.drop(columns=["temp_weight", "time_bucket"])
+
+

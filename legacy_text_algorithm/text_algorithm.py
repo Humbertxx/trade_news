@@ -1,8 +1,6 @@
 import pandas as pd
 from rapidfuzz import fuzz
 
-
-
 ############################ VERSION 1, HEADLINE COMPARISON AND TIME FIX IN TWO DIFFERENT FUNCTIONS ############################
 
 # Simple duplication handler using fuzz (On), text level similarity
@@ -23,7 +21,7 @@ def time_fix(df: pd.DataFrame) -> pd.DataFrame:
     
 ############################ VERSION 2, CHANGE ############################
     
-# O(n^2) process for similarity, using fuzz 
+# O(n^2) process for similarity, using fuzz, remove article with less relevance based on the weights
 def remove_similar_rows_weighted(df : pd.DataFrame, weights_dict : dict, threshold: int = 85, 
                                 time_window : int = 1800, default_weight : int = 1) -> pd.DataFrame:
     df = df.copy()
