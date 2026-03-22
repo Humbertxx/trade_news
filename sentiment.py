@@ -1,6 +1,5 @@
 import pandas as pd
 from transformers import pipeline
-from typing import Mapping
      
 
 def get_sentiment_pipe():
@@ -8,8 +7,7 @@ def get_sentiment_pipe():
     return sentiment_pipe
 
 # get the aggregated title (title + description) and calculate sentiment
-def calculated_weighted_sentiment(df: pd.DataFrame, pipe=None, source_weight: Mapping[str, float] | None = None, 
-                                  default_weight: int = 1) -> pd.DataFrame:
+def calculated_weighted_sentiment(df: pd.DataFrame, pipe=None, source_weight: dict= None, default_weight: float = 1) -> pd.DataFrame:
     pipe = get_sentiment_pipe()
     texts = df['title'].tolist() 
     raw_results = pipe(texts)

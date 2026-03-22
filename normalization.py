@@ -3,27 +3,31 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
 import config
-from sentiment import *
+from sentiment import calculated_weighted_sentiment, final_weight_score, results
 
-def process_batch(df: pd.DataFrame) -> pd.DataFrame:
+def process_batch(df: pd.DataFrame, source_weights: dict | None = None, time_window: float = 1800, 
+                  sim_threshold: float = 0.85, default_weight: float = 1.0) -> pd.DataFrame:
+    if source_weights is None:
+        source_weights = config.SOURCE_WEIGHTS
+
     if "description" not in df.columns:
         df["description"] = ""
     df = concatenate_text(df)
-    
-    df = dedup_tiingo_marketaux(df, weights_dict=config.SOURCE_WEIGHTS)
-    df = calculated_weighted_sentiment(df, source_weight=config.SOURCE_WEIGHTS)
+    df = dedup_tiingo_marketaux(df, weights_dict=source_weights, time_window=time_window, 
+                                sim_threshold=sim_threshold, default_weight=default_weight)
+    df = calculated_weighted_sentiment(df, source_weight=source_weights, default_weight=default_weight)
     score = final_weight_score(df)
     return results(df, score)
 
-    # allows for full description (headline + text) allowing better model clustering
+# allows for full description (headline + text) allowing better model clustering
 def concatenate_text(df: pd.DataFrame) -> pd.DataFrame:
     df['description'] = df['description'].fillna('')
     df['full_text'] = df['title'] + ". " + df['description']
     return df
 
 # Scikit Learn TF-IDF and cross cosine functions
-def dedup_tiingo_marketaux(df, weights_dict=None, time_window=1800, sim_threshold=0.85,default_weight=1):
-    
+def dedup_tiingo_marketaux(df : pd.DataFrame, weights_dict: dict = None, time_window : float =1800, 
+                           sim_threshold : float =0.85,default_weight : float = 1) -> pd.DataFrame:
     if weights_dict is None:
         weights_dict = {}
 
@@ -76,5 +80,5 @@ def dedup_tiingo_marketaux(df, weights_dict=None, time_window=1800, sim_threshol
                 else:
                     indices_to_drop.add(gj)
 
-    df_clean = df.drop(index=list(indices_to_drop)).reset_index(drop=True)
-    return df_clean.drop(columns=["temp_weight", "time_bucket"])
+    df = df.drop(index=list(indices_to_drop)).reset_index(drop=True)
+    return df.drop(columns=["temp_weight", "time_bucket"])

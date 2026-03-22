@@ -18,7 +18,7 @@ class FeedGetter:
         news_queue_obj: Optional[queue.Queue] = None, process_batch_callback: Optional[Callable] = None) -> None:
         
         self.tickers = tickers
-        self.rss_sources = rss_source # this is a dict so NEED TO CHANGE
+        self.rss_sources = rss_source # takes key values from previous code calls
         self.rss_source = self.rss_sources[0]
         self.news_queue = news_queue_obj or queue.Queue()
         self.seen_headlines = deque(maxlen=max_seen_headlines)
@@ -95,14 +95,8 @@ class FeedGetter:
 
     def run_processor(self, df_batch: pd.DataFrame) -> None:
         if not self.process_batch_callback:
-            return 
-        try:
-            self.process_batch_callback(df_batch)
-        except TypeError:
-            source_weights = os.getenv("SOURCE_WEIGHTS")
-            if source_weights is None:
-                raise
-            self.process_batch_callback(df_batch, source_weights)
+            return
+        self.process_batch_callback(df_batch)
 
     def worker_logic(self, timeout: int = 5) -> None:
         buffer = []
